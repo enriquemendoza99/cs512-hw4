@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW4</title>
+  <style>
+    body {
+      background: #111;
+      color: #ccc;
+      font-family: monospace;
+    }
+
+    textarea {
+      background: #222;
+      color: #0f0;
+      font: 14px monospace;
+      width: 400px;
+      height: 250px;
+    }
+
+    canvas {
+      border: 1px solid #444;
+    }
+
+    #controls {
+      margin-top: 8px;
+    }
+
+    #controls label {
+      display: block;
+      margin: 4px 0;
+    }
+
+    input[type=range] {
+      width: 260px;
+      vertical-align: middle;
+    }
+
+    button {
+      background: #222;
+      color: #eee;
+      border: 1px solid #555;
+      font: 14px monospace;
+      padding: 4px 8px;
+      margin-top: 6px;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Hierarchical Modeling: Soccer Goalie</h2>
+  <p>Edit vertex and fragment shaders on the left to get the result instantly.<br>
+    Drag the mouse to rotate the scene.<br>
+    Use arrow keys and w, s keys to move the camera.<br>
+    Press Penalty to shoot the ball, then use the sliders to catch it with a glove.<br>
+    Press F12 to see the console for debugging.</p>
+
+  <div style="display: flex; gap: 10px; align-items: flex-start;">
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="520" height="520"></canvas>
+
+      <div id="controls">
+        <label>Body position <input type="range" id="bodySlider" min="-1.3" max="1.3" step="0.01" value="0"></label>
+        <label>Shoulder angle <input type="range" id="shoulderSlider" min="0" max="170" step="1" value="60"></label>
+        <label>Elbow angle &nbsp;&nbsp; <input type="range" id="elbowSlider" min="0" max="130" step="1" value="50"></label>
+        <label>Wrist angle &nbsp;&nbsp; <input type="range" id="wristSlider" min="-70" max="70" step="1" value="0"></label>
+        <button id="penaltyBtn">Penalty</button>
+        <span id="result"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vertex shader -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+in vec3 aNormal;
+
+uniform float uTime; //time in sec
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+uniform mat3 uNormalMatrix;
+
+out vec3 vColor;
+out vec3 vNormal;
+out vec3 vPosition;
+
+void main() {
+  vec4 worldPosition = uModelTransformationMatrix * vec4(aPosition,1.0);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * worldPosition;
+  vPosition = worldPosition.xyz;
+  vNormal = normalize(uNormalMatrix * aNormal);
+  vColor = aColor;
+}
+</script>
+  <!-- Fragment Shader -->
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec3 vColor;
+in vec3 vNormal;
+in vec3 vPosition;
+
+uniform vec3 uLightPos;
+uniform vec3 uViewPos;
+uniform float uKa;
+uniform float uKd;
+uniform float uKs;
+uniform float uAlpha;
+
+out vec4 fragColor;
+
+vec3 calculateLight(vec3 lightPos, vec3 normal, vec3 viewDir)
+{ // Diffuse
+  vec3 lightDir = normalize(lightPos - vPosition);
+  float cosTheta = max(dot(normal, lightDir), 0.0);
+  vec3 diffuse = uKd * cosTheta * vColor;
+  // Specular
+  vec3 reflectDir = -reflect(lightDir, normal);
+  float spec = pow(max(dot(viewDir, reflectDir), 0.0), uAlpha);
+  vec3 specular = uKs * spec * vec3(1.0);
+  return diffuse + specular;
+}
+
+void main() {
+  vec3 normal = normalize(vNormal);
+  // Ambient
+  vec3 ambient = uKa * vColor;
+  vec3 viewDir = normalize(uViewPos - vPosition);
+  vec3 light = calculateLight(uLightPos, normal, viewDir);
+  vec3 result = ambient + light;
+  fragColor = vec4(result, 1.0);
+}
+</script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      let shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      let vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      let fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      let prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(prog));
+      }
+      return prog;
+    }
+
+    // WebGL setup
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) alert("WebGL2 not supported");
+
+    let vertEditor = document.getElementById("vertEditor");
+    let fragEditor = document.getElementById("fragEditor");
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    let program, posLoc, colorLoc, normalLoc, timeLoc, uMVM, uPM, uMTM, uNM;
+    let uLightPos, uViewPos, uKa, uKd, uKs, uAlpha;
+
+    // Buffers
+    function initBuffers(data) {
+      let vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.vertices), gl.STATIC_DRAW);
+
+      let nbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.normals), gl.STATIC_DRAW);
+
+      let cbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.colors), gl.STATIC_DRAW);
+
+      let ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(data.indices), gl.STATIC_DRAW);
+
+      return { vbo, nbo, cbo, ibo, count: data.indices.length };
+    }
+
+    const BALL_R = 0.12;
+
+    const shapes = {
+      grass: initBuffers(Cube([0.2, 0.6, 0.22])),
+      post: initBuffers(Cylinder(0.05, 1.9, 24, [0.95, 0.95, 0.95])),
+      bar: initBuffers(Cylinder(0.05, 4.1, 24, [0.95, 0.95, 0.95])),
+      ball: initBuffers(Sphere(BALL_R, 32, 20, [0.95, 0.95, 0.95])),
+      torso: initBuffers(Cube([1.0, 0.8, 0.1])),
+      head: initBuffers(Sphere(0.15, 32, 20, [0.95, 0.75, 0.6])),
+      leg: initBuffers(Cube([0.15, 0.15, 0.25])),
+      upperArm: initBuffers(Cube([1.0, 0.8, 0.1])),
+      forearm: initBuffers(Cube([0.95, 0.75, 0.6])),
+      glove: initBuffers(Cube([0.9, 0.15, 0.15]))
+    };
+
+    function initShaderProgram() {
+      try {
+        program = createProgram(gl, vertEditor.value, fragEditor.value);
+        gl.useProgram(program);
+        posLoc = gl.getAttribLocation(program, "aPosition");
+        colorLoc = gl.getAttribLocation(program, "aColor");
+        normalLoc = gl.getAttribLocation(program, "aNormal");
+        timeLoc = gl.getUniformLocation(program, "uTime");
+        uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+        uPM = gl.getUniformLocation(program, "uProjectionMatrix");
+        uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+        uNM = gl.getUniformLocation(program, "uNormalMatrix");
+        uLightPos = gl.getUniformLocation(program, "uLightPos");
+        uViewPos = gl.getUniformLocation(program, "uViewPos");
+        uKa = gl.getUniformLocation(program, "uKa");
+        uKd = gl.getUniformLocation(program, "uKd");
+        uKs = gl.getUniformLocation(program, "uKs");
+        uAlpha = gl.getUniformLocation(program, "uAlpha");
+      } catch (e) { console.error(e); }
+    }
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+
+    // UI elements
+    const bodySlider = document.getElementById("bodySlider");
+    const shoulderSlider = document.getElementById("shoulderSlider");
+    const elbowSlider = document.getElementById("elbowSlider");
+    const wristSlider = document.getElementById("wristSlider");
+    const penaltyBtn = document.getElementById("penaltyBtn");
+
+    let bodyX = 0, shoulder = 60, elbow = 50, wrist = 0;
+
+    bodySlider.addEventListener("input", () => { bodyX = parseFloat(bodySlider.value); });
+    shoulderSlider.addEventListener("input", () => { shoulder = parseFloat(shoulderSlider.value); });
+    elbowSlider.addEventListener("input", () => { elbow = parseFloat(elbowSlider.value); });
+    wristSlider.addEventListener("input", () => { wrist = parseFloat(wristSlider.value); });
+
+    const result = document.getElementById("result");
+    const FLY_TIME = 3.0;
+    let kicking = false, kickTime = 0;
+    let targetX = 0, targetY = 0;
+    let ballX = 0, ballY = BALL_R, ballZ = 2.6;
+    let ballPos = [0, 0, 0], glovePos = [[0, 0, 0], [0, 0, 0]];
+
+    penaltyBtn.addEventListener("click", () => {
+      kicking = true;
+      kickTime = 0;
+      targetX = -1.7 + 3.4 * Math.random();
+      targetY = 0.3 + 1.3 * Math.random();
+      result.textContent = "";
+    });
+
+    // Mouse and keyboard interactions
+    let mouseDown = false, lastX, lastY, sceneRotX = 0.2, sceneRotY = -0.35;
+    let camX = 0, camY = -0.9, camZ = -6;
+
+    canvas.addEventListener('mousedown', e => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+    canvas.addEventListener('mousemove', e => {
+      if (!mouseDown) return;
+      let dx = e.clientX - lastX;
+      let dy = e.clientY - lastY;
+      sceneRotY += dx * 0.01;
+      sceneRotX += dy * 0.01;
+      lastX = e.clientX; lastY = e.clientY;
+    });
+
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName == "TEXTAREA") return;
+      const step = 0.2;
+      switch (e.key) {
+        case 'ArrowUp': camY -= step; break;
+        case 'ArrowDown': camY += step; break;
+        case 'ArrowLeft': camX += step; break;
+        case 'ArrowRight': camX -= step; break;
+        case 'w': camZ += step; break;
+        case 's': camZ -= step; break;
+      }
+    });
+
+    // Projection setup
+    let fov = Math.PI / 4, aspect = canvas.width / canvas.height, zNear = 0.1, zFar = 100;
+
+    let orthoSize = 2.8;
+
+    // Perspective and Orthographic projection
+    let projPerspective = perspective(fov, aspect, zNear, zFar);
+
+    let projOrtho = matMul(
+      box2Cube(-orthoSize * aspect, orthoSize * aspect, -orthoSize, orthoSize, zNear, zFar),
+      flipZ()
+    );
+    let proj = projOrtho;
+
+    // Matrix stack
+    let modelMatrix = mat4Identity();
+    let stack = [];
+
+    function pushMatrix() {
+      stack.push(new Float32Array(modelMatrix));
+    }
+
+    function popMatrix() {
+      modelMatrix = stack.pop();
+    }
+
+    function applyFrameTransform(m) {
+      modelMatrix = multiplyMat4(modelMatrix, m);
+    }
+
+    function drawShape(shape) {
+      gl.uniformMatrix4fv(uMTM, false, modelMatrix);
+      gl.uniformMatrix3fv(uNM, false, normalMatrix(modelMatrix));
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, shape.vbo);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, shape.cbo);
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+
+      if (normalLoc >= 0) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, shape.nbo);
+        gl.enableVertexAttribArray(normalLoc);
+        gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+      }
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, shape.ibo);
+
+      // draw the object by the index order
+      gl.drawElements(gl.TRIANGLES, shape.count, gl.UNSIGNED_SHORT, 0);
+    }
+
+    function drawPart(shape, T, S) {
+      pushMatrix();
+        applyFrameTransform(T);
+        applyFrameTransform(S);
+        drawShape(shape);
+      popMatrix();
+    }
+
+    function toRad(deg) {
+      return deg * Math.PI / 180;
+    }
+
+    function drawGround() {
+      drawPart(shapes.grass, translation(0, -0.05, 1.0), scaling(3.0, 0.05, 2.4));
+      pushMatrix();
+        applyFrameTransform(translation(ballX, ballY, ballZ));
+        ballPos = [modelMatrix[12], modelMatrix[13], modelMatrix[14]];
+        drawShape(shapes.ball);
+      popMatrix();
+    }
+
+    function drawGoal() {
+      drawPart(shapes.post, translation(-2.0, 0, 0), rotationX(-Math.PI / 2));
+      drawPart(shapes.post, translation(2.0, 0, 0), rotationX(-Math.PI / 2));
+      drawPart(shapes.bar, translation(-2.05, 1.9, 0), rotationY(Math.PI / 2));
+    }
+
+    function drawBody() {
+      drawPart(shapes.torso, translation(0, 0.3, 0), scaling(0.22, 0.3, 0.12));
+      drawPart(shapes.head, translation(0, 0.78, 0), scaling(1, 1, 1));
+      drawPart(shapes.leg, translation(-0.12, -0.375, 0), scaling(0.08, 0.375, 0.08));
+      drawPart(shapes.leg, translation(0.12, -0.375, 0), scaling(0.08, 0.375, 0.08));
+    }
+
+    function drawArm(side) {
+      pushMatrix();     // body -> upper arm frame
+        applyFrameTransform(translation(side * 0.28, 0.52, 0));
+        applyFrameTransform(rotationZ(side * toRad(shoulder)));
+        drawPart(shapes.upperArm, translation(0, -0.15, 0), scaling(0.06, 0.15, 0.06));
+        pushMatrix();     // upper arm -> forearm frame
+          applyFrameTransform(translation(0, -0.3, 0));
+          applyFrameTransform(rotationZ(side * toRad(elbow)));
+          drawPart(shapes.forearm, translation(0, -0.14, 0), scaling(0.05, 0.14, 0.05));
+          pushMatrix();     // forearm -> glove frame
+            applyFrameTransform(translation(0, -0.28, 0));
+            applyFrameTransform(rotationZ(side * toRad(wrist)));
+            applyFrameTransform(translation(0, -0.1, 0));
+            glovePos[(side + 1) / 2] = [modelMatrix[12], modelMatrix[13], modelMatrix[14]];
+            drawPart(shapes.glove, translation(0, 0, 0), scaling(0.09, 0.1, 0.04));
+          popMatrix();     // restore forearm frame
+        popMatrix();     // restore upper arm frame
+      popMatrix();     // restore body frame
+    }
+
+    function drawGoalie() {
+      pushMatrix();     // world -> body frame
+        applyFrameTransform(translation(bodyX, 0.75, 0));
+        drawBody();
+        drawArm(1);
+        drawArm(-1);
+      popMatrix();     // restore world frame
+    }
+
+    function distance(a, b) {
+      return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+    }
+
+    function updatePenalty(dt) {
+      if (!kicking) return;
+      kickTime += dt;
+      let p = Math.min(kickTime / FLY_TIME, 1);
+
+      ballX = targetX * p;
+      ballY = BALL_R + (targetY - BALL_R) * p;
+      ballZ = 2.6 * (1 - p);
+
+      if (p == 1 && result.textContent == "") {
+        let d = Math.min(distance(ballPos, glovePos[0]), distance(ballPos, glovePos[1]));
+        result.textContent = (d < 0.3) ? " SAVED!" : " GOAL!";
+      }
+
+      if (kickTime > FLY_TIME + 1.5) {
+        kicking = false;
+        ballX = 0; ballY = BALL_R; ballZ = 2.6;
+      }
+    }
+
+    let startTime = Date.now();
+    let lastTime = Date.now();
+
+    function render() {
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.05, 0.07, 0.12, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      // init model-view matrix as identity matrix
+      let modelViewMatrix = mat4Identity();
+
+      //delta time in ms
+      let deltaTime = Date.now() - startTime;
+      let dt = (Date.now() - lastTime) / 1000.0;
+      lastTime = Date.now();
+      updatePenalty(dt);
+
+      // camera translation
+      modelViewMatrix = mat4Translate(modelViewMatrix, [camX, camY, camZ]);
+
+      //set time in seconds
+      gl.uniform1f(timeLoc, deltaTime / 1000.0);
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, modelViewMatrix);
+
+      // light and material
+      gl.uniform3f(uLightPos, 2.0, 5.0, 6.0);
+      gl.uniform3f(uViewPos, -camX, -camY, -camZ);
+      gl.uniform1f(uKa, 0.35);
+      gl.uniform1f(uKd, 0.7);
+      gl.uniform1f(uKs, 0.3);
+      gl.uniform1f(uAlpha, 20.0);
+
+      // init model transformation matrix as identity matrix
+      modelMatrix = mat4Identity();
+
+      pushMatrix();
+        // scene rotation
+        applyFrameTransform(rotationX(sceneRotX));
+        applyFrameTransform(rotationY(sceneRotY));
+        drawGround();
+        drawGoal();
+        drawGoalie();
+      popMatrix();
+
+      requestAnimationFrame(render);
+    }
+
+    // Initialize when page loads
+    window.onload = function () {
+      requestAnimationFrame(render);
+    }
+
+  </script>
+</body>
+
+</html>
